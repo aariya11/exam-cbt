@@ -1,0 +1,530 @@
+// RankForge database schema
+//
+// Provider note: SQLite is used for zero-dependency local development.
+// The schema is written with standard relational constructs so it ports to
+// PostgreSQL by changing `provider` to "postgresql" and pointing DATABASE_URL
+// at Postgres. Several Prisma features are intentionally avoided so the schema
+// stays portable: enum types are modelled as String + app-level constants,
+// and structured data is stored as JSON strings (String) instead of Json.
+//
+// Timestamps are stored in UTC everywhere.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------------
+// Identity
+// ------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  emailVerifiedAt DateTime?
+  passwordHash    String
+  displayName     String
+  username        String    @unique
+  role            String    @default("STUDENT") // STUDENT | QUESTION_EDITOR | EXAM_MANAGER | ADMIN | SUPER_ADMIN
+  state           String?
+  city            String?
+  timezone        String    @default("Asia/Kolkata")
+  status          String    @default("ACTIVE") // ACTIVE | SUSPENDED | DELETED
+  isDemo          Boolean   @default(false)
+  leaderboardOptOut Boolean @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions              Session[]
+  attempts              Attempt[]
+  results               Result[]
+  consents              ConsentRecord[]
+  passwordResetTokens   PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  notifications         Notification[]
+  achievements          UserAchievement[]
+  auditLogs             AuditLog[]
+  authoredQuestions     Question[] @relation("QuestionAuthor")
+  reviewedQuestions     Question[] @relation("QuestionReviewer")
+  createdExams          Exam[]     @relation("ExamCreator")
+  integrityAlerts       IntegrityAlert[]
+  reviewedAlerts        IntegrityAlert[] @relation("AlertReviewer")
+
+  @@index([role])
+  @@index([state])
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  boundAttempts Attempt[] @relation("AttemptBoundSession")
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Consent records for privacy-sensitive features (terms, cookies, proctoring).
+model ConsentRecord {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // TERMS | PRIVACY | MARKETING | PROCTORING
+  version   String
+  grantedAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  @@index([userId, kind])
+}
+
+// ------------------------------------------------------------------
+// Examination taxonomy and content
+// ------------------------------------------------------------------
+
+model Category {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  exams Exam[]
+  series ExamSeries[]
+}
+
+model Subject {
+  id      String  @id @default(cuid())
+  slug    String  @unique
+  name    String
+  topics  Topic[]
+  questions Question[]
+  sections  ExamSection[]
+}
+
+model Topic {
+  id        String  @id @default(cuid())
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  slug      String
+  name      String
+
+  questions Question[]
+
+  @@unique([subjectId, slug])
+}
+
+model Question {
+  id          String   @id @default(cuid())
+  subjectId   String
+  subject     Subject  @relation(fields: [subjectId], references: [id])
+  topicId     String?
+  topic       Topic?   @relation(fields: [topicId], references: [id])
+  difficulty  String // EASY | MEDIUM | HARD
+  type        String // SINGLE_CHOICE | MULTIPLE_CHOICE
+  text        String
+  explanation String?
+  imageUrl    String?
+  source      String? // provenance; required for PUBLISHED questions
+  license     String? // licensing note for the content
+  status      String   @default("DRAFT") // DRAFT | IN_REVIEW | APPROVED | PUBLISHED | RETIRED
+  version     Int      @default(1)
+  createdById String
+  createdBy   User     @relation("QuestionAuthor", fields: [createdById], references: [id])
+  reviewedById String?
+  reviewedBy  User?    @relation("QuestionReviewer", fields: [reviewedById], references: [id])
+  reviewedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  options  QuestionOption[]
+  versions QuestionVersion[]
+  exams    ExamQuestion[]
+  answers  AttemptAnswer[]
+
+  @@index([subjectId, difficulty, status])
+  @@index([status])
+}
+
+model QuestionOption {
+  id         String  @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text       String
+  isCorrect  Boolean @default(false)
+  sortOrder  Int     @default(0)
+
+  @@index([questionId])
+}
+
+// Immutable snapshot of a question at each edit, for auditing content changes.
+model QuestionVersion {
+  id         String   @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  version    Int
+  snapshot   String // JSON snapshot of question + options
+  editedById String
+  createdAt  DateTime @default(now())
+
+  @@index([questionId])
+}
+
+model Exam {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  title       String
+  description String
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  difficulty  String // EASY | MEDIUM | HARD
+  durationMinutes Int
+  marksPerCorrect     Float @default(4)
+  negativeMarksPerWrong Float @default(0)
+  allowPartialCredit  Boolean @default(false)
+  shuffleQuestions    Boolean @default(true)
+  shuffleOptions      Boolean @default(true)
+  maxAttempts         Int? // null = unlimited
+  status              String @default("DRAFT") // DRAFT | SCHEDULED | ACTIVE | ARCHIVED
+  opensAt             DateTime?
+  closesAt            DateTime?
+  publishResultsImmediately Boolean @default(true)
+  resultsPublishAt    DateTime?
+  revealSolutions     Boolean @default(true)
+  requiresDesktop     Boolean @default(false)
+  maxFocusWarnings    Int     @default(5)
+  tieBreakRules       String  @default("[]") // JSON array from TIE_BREAK_OPTIONS
+  instructions        String?
+  seriesId            String?
+  series              ExamSeries? @relation(fields: [seriesId], references: [id])
+  createdById         String
+  createdBy           User    @relation("ExamCreator", fields: [createdById], references: [id])
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  sections  ExamSection[]
+  questions ExamQuestion[]
+  attempts  Attempt[]
+
+  @@index([categoryId, difficulty, status])
+  @@index([status])
+}
+
+model ExamSeries {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  // Documented aggregation formula for the series leaderboard.
+  formula     String   @default("SUM_OF_BEST_PERCENTAGE")
+  createdAt   DateTime @default(now())
+
+  exams Exam[]
+}
+
+model ExamSection {
+  id         String  @id @default(cuid())
+  examId     String
+  exam       Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  subjectId  String
+  subject    Subject @relation(fields: [subjectId], references: [id])
+  title      String
+  questionCount   Int
+  marksPerCorrect Float?
+  negativeMarksPerWrong Float?
+  sortOrder  Int     @default(0)
+
+  examQuestions ExamQuestion[]
+
+  @@index([examId])
+}
+
+model ExamQuestion {
+  id         String  @id @default(cuid())
+  examId     String
+  exam       Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id])
+  sectionId  String?
+  section    ExamSection? @relation(fields: [sectionId], references: [id])
+  marks           Float?
+  negativeMarks   Float?
+  orderIndex      Int    @default(0)
+  isDefective     Boolean @default(false)
+
+  @@unique([examId, questionId])
+  @@index([examId])
+}
+
+// ------------------------------------------------------------------
+// Attempts, events, answers, results
+// ------------------------------------------------------------------
+
+model Attempt {
+  id         String @id @default(cuid())
+  userId     String
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  examId     String
+  exam       Exam   @relation(fields: [examId], references: [id])
+  status     String @default("IN_PROGRESS") // IN_PROGRESS | SUBMITTED | AUTO_SUBMITTED | INVALIDATED
+  startedAt  DateTime @default(now())
+  deadlineAt DateTime
+  submittedAt DateTime?
+  finalizeReason String? // student_submit | deadline_exceeded | invalidated
+  paperJson  String // server-side paper: question order, option order, marks
+  seed       String
+  sessionId  String?
+  session    Session? @relation("AttemptBoundSession", fields: [sessionId], references: [id])
+  ipHash     String?
+  userAgent  String?
+  focusWarnings Int @default(0)
+  invalidatedAt     DateTime?
+  invalidatedReason String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  answers AttemptAnswer[]
+  events  AttemptEvent[]
+  result  Result?
+  integrityAlerts IntegrityAlert[]
+  proctoringSessions ProctoringSession[]
+
+  @@index([examId, status])
+  @@index([userId, examId])
+  @@index([status, deadlineAt])
+}
+
+model AttemptAnswer {
+  id         String @id @default(cuid())
+  attemptId  String
+  attempt    Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id])
+  selectedOptionIds String  @default("[]") // JSON array of option ids
+  visited    Boolean @default(false)
+  markedForReview Boolean @default(false)
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+}
+
+// Monitoring / audit trail of everything that happens during an attempt.
+model AttemptEvent {
+  id         String   @id @default(cuid())
+  attemptId  String
+  attempt    Attempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  type       String // start, answer_saved, visited, visibility_hidden, window_blur, fullscreen_exit, refresh, reconnect, submit, auto_finalize, concurrent_access, deadline_rejected, ...
+  detail     String? // JSON payload
+  clientTime DateTime?
+  serverTime DateTime @default(now())
+  ip         String?
+
+  @@index([attemptId, type])
+  @@index([serverTime])
+}
+
+model Result {
+  id         String @id @default(cuid())
+  attemptId  String @unique
+  attempt    Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  examId     String
+  userId     String
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  score      Float
+  maxScore   Float
+  percentage Float
+  correctCount   Int
+  wrongCount     Int
+  unansweredCount Int
+  accuracy       Float // correct / attempted
+  timeUsedSec    Int
+  subjectBreakdown String // JSON: [{subjectId,name,score,maxScore,correct,wrong,unanswered}]
+  topicBreakdown   String // JSON: [{topicId,name,score,maxScore,correct,wrong}]
+  publishedAt DateTime?
+  rankSnapshot Int? // rank across the exam at finalisation time (published results only)
+  regradedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  subjectScores ResultSubjectScore[]
+
+  @@index([examId, score])
+  @@index([userId, createdAt])
+  @@index([examId, publishedAt])
+}
+
+// Normalised per-subject score rows, written at finalisation. Powers subject
+// leaderboards with indexed SQL aggregation instead of JSON parsing.
+model ResultSubjectScore {
+  id         String @id @default(cuid())
+  resultId   String
+  result     Result @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  subjectId  String
+  score      Float
+  maxScore   Float
+  correct    Int
+  wrong      Int
+  unanswered Int
+
+  @@unique([resultId, subjectId])
+  @@index([subjectId, score])
+}
+
+// Period snapshots of leaderboard positions, produced by the freezefeature
+// of the admin panel. Used for rank movement reporting.
+model RankingSnapshot {
+  id         String   @id @default(cuid())
+  scope      String // EXAM | CATEGORY | DIFFICULTY | SUBJECT | STATE | SERIES
+  scopeKey   String
+  userId     String
+  rank       Int
+  score      Float
+  periodStart DateTime
+  periodEnd   DateTime
+  computedAt  DateTime @default(now())
+
+  @@index([scope, scopeKey, periodStart])
+  @@index([userId])
+}
+
+model Achievement {
+  id          String @id @default(cuid())
+  code        String @unique
+  title       String
+  description String
+  icon        String
+
+  userAchievements UserAchievement[]
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+  attemptId     String?
+  earnedAt      DateTime @default(now())
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+}
+
+// ------------------------------------------------------------------
+// Integrity, proctoring, ops
+// ------------------------------------------------------------------
+
+model IntegrityAlert {
+  id         String @id @default(cuid())
+  attemptId  String?
+  attempt    Attempt? @relation(fields: [attemptId], references: [id])
+  userId     String?
+  user       User?   @relation(fields: [userId], references: [id])
+  type       String // CONCURRENT_ACCESS | FOCUS_LOSS_THRESHOLD | DEADLINE_ANOMALY | RATE_LIMITED_SUBMIT | UNUSUAL_SUBMISSION_PATTERN | ...
+  severity   String // LOW | MEDIUM | HIGH
+  confidence Float? // 0..1 statistical confidence where applicable
+  detail     String // JSON evidence payload
+  status     String @default("OPEN") // OPEN | RESOLVED | DISMISSED
+  reviewedById String?
+  reviewedBy   User?  @relation("AlertReviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  resolutionNote String?
+  createdAt  DateTime @default(now())
+
+  @@index([status, severity])
+  @@index([attemptId])
+}
+
+// Optional remote proctoring integration boundary. No capture happens unless
+// an administrator explicitly enables a provider and the student consents.
+model ProctoringSession {
+  id         String @id @default(cuid())
+  attemptId  String
+  attempt    Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  provider   String
+  status     String @default("PENDING_CONSENT") // PENDING_CONSENT | ACTIVE | ENDED | FAILED
+  consentRecordId String?
+  startedAt  DateTime?
+  endedAt    DateTime?
+  meta       String? // JSON: non-biometric session metadata only
+  createdAt  DateTime @default(now())
+
+  @@index([attemptId])
+}
+
+model AuditLog {
+  id         String @id @default(cuid())
+  actorId    String?
+  actor      User?  @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  before     String? // JSON
+  after      String? // JSON
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+}
+
+model SystemSetting {
+  key         String   @id
+  value       String
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}

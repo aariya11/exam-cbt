@@ -1,0 +1,48 @@
+{
+  "name": "rankforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RankForge - Prepare. Compete. Prove Yourself. A premium national CBT examination platform.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev --name init",
+    "db:seed": "node --env-file=.env --import tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "sweep": "node --env-file=.env --import tsx scripts/sweep.ts",
+    "check:leaderboards": "node --env-file=.env --import tsx scripts/check-leaderboards.ts",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "katex": "0.19.0",
+    "lucide-react": "1.59.0",
+    "next": "16.4.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "prisma": "6.19.3",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  },
+  "allowScripts": {
+    "@prisma/engines@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.25.12": true,
+    "prisma@6.19.3": true,
+    "@prisma/client@6.19.3": true
+  }
+}
